@@ -163,12 +163,16 @@ class SpiderController
                     echo '请求失败';
                     //如果失败，向服务器回调失败的号码，清除限制，继续请求
                     try {
-                        asyncRequest($data['from'] . 'callbackCurlFailNumber', 'POST', ['phone_num'=>$data['phone_num']]);
+                        $result = asyncRequest($data['from'] . 'callbackCurlFailNumber', 'POST', ['phone_num'=>$data['phone_num']]);
+						if($result){
+							trace('callbackCurlFailNumber错误回调请求失败', 'error');
+						}else{
+							trace('['.date('Y-m-d H:i:s').'] curl请求失败，已发送回调通知', 'notice');
+						}
                     }catch (\Exception $e){
                         trace('callbackCurlFailNumber错误回调请求失败', 'error');
                         trace($e->getMessage(), 'error');
                     }
-                    trace('['.date('Y-m-d H:i:s').'] curl请求失败，已发送回调通知', 'notice');
                 }
             } else {
                 $redis::del('spider:running');
@@ -195,7 +199,7 @@ class SpiderController
             $redis::inc('spider:success:' . $params['site']);
         }
         $key = $this->redis_key . $params['phone_num'];
-        $callback_url = $params['from'] . 'receiveNumber';
+        $callback_url = 'http://imagecdn1566.iyunzhi.top/index.php/index/msg_queue/receiveNumber';
         //判断是否是最新数据
         //获取缓存最新一条跟当前循环对比
         $cache = json_decode($redis::get($key), true);
@@ -232,7 +236,6 @@ class SpiderController
             }
             $new_data_count = count($new_data);
             if ($new_data_count > 0) {
-				trace($params['phone_num'] . '采集成功' . $new_data_count . '条', 'notice');
                 //回调通知
                 try {
                     $result = asyncRequest($callback_url, 'POST', $new_data);
@@ -476,9 +479,12 @@ class SpiderController
                 $proxy = $proxy_ip . ':' . $proxy_port;
                 $redis::set($key_proxy, $proxy, 3600);
                 printLog('新代理获取成功：' . $proxy, 'notice');
-                curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
+				if($redis::get('proxy:today_get_proxy') > 55){
+					curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
+				}
                 return $proxy;
             case 115:
+			case 121:
             case 116:
                 //116 今日套餐已用完, 1.增加当前使用账号下标，2.领取当天免费额度 3.加入白名单
                 //115 您的该套餐已经过期了
@@ -509,6 +515,7 @@ class SpiderController
                 }
                 break;
             case 117:
+			case 401:
             case 113:
                 //请添加白名单22
                 printLog('需要添加白名单', 'notice');
@@ -530,6 +537,8 @@ class SpiderController
                 self::getProxyIP();
                 break;
             default:
+				trace($proxy_data, 'error');
+				curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=代理获取未知异常，请检查');
                 return false;
         }
     }

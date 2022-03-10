@@ -14,39 +14,12 @@ class SpiderController
 {
     protected $redis_key = 'spider:message:';
 
+    public function heartbeat(){
+        return 'ok';
+    }
+
     public function test()
     {
-        $account = [
-            [
-                'http://webapi.http.zhimacangku.com/getip?num=1&type=2&pro=&city=0&yys=0&port=1&pack=67654&ts=0&ys=0&cs=0&lb=1&sb=0&pb=4&mr=1&regions=',
-                '82540',
-                'bf0fff1f9aa718e7a83b60cf0cde386e',
-                '18142618863',
-                'chenjuan5200'
-            ],
-            [
-                'http://webapi.http.zhimacangku.com/getip?num=1&type=2&pro=&city=0&yys=0&port=1&pack=85831&ts=0&ys=0&cs=0&lb=1&sb=0&pb=4&mr=1&regions=',
-                '104770',
-                'c13e0d43d2a02e9cc8acd4444dc7142f',
-                '17873026796',
-                'chenjuan5200'
-            ],
-            [
-                'http://webapi.http.zhimacangku.com/getip?num=1&type=2&pro=&city=0&yys=0&port=1&pack=71711&ts=0&ys=0&cs=0&lb=1&sb=0&pb=4&mr=1&regions=',//芝麻活动每天20条   15263819409 15263819410
-                '85543',
-                '97f62c9d43993aa198b44e2a629b7518',
-                '18142618803',
-                'chenjuan5200'
-            ],
-            [
-                'http://webapi.http.zhimacangku.com/getip?num=1&type=2&pro=&city=0&yys=0&port=1&time=1&ts=0&ys=0&cs=0&lb=1&sb=0&pb=4&mr=1&regions=',
-                '82540',
-                'bf0fff1f9aa718e7a83b60cf0cde386e',
-                '18142618863',
-                'chenjuan5200'
-            ]
-        ];
-        (new RedisController())::set('proxy:account', json_encode($account), -1);
         return 'test';
     }
 
@@ -136,7 +109,7 @@ class SpiderController
                         printLog($data['site'] . '加入exe采集队列失败', 'notice');
                     }else{
                         //为了防止exe重复采集同一个号码，降低采集频率，队列短时间内只允许同时存在一个号码
-                        $redis::set($use_key, 1,60);
+                        $redis::set($use_key, 1, 5*60);
                         printLog($data['site'] . '加入exe采集队列成功', 'notice');
                     }
                     continue;
@@ -164,11 +137,11 @@ class SpiderController
                     //如果失败，向服务器回调失败的号码，清除限制，继续请求
                     try {
                         $result = asyncRequest($data['from'] . 'callbackCurlFailNumber', 'POST', ['phone_num'=>$data['phone_num']]);
-						if($result){
-							trace('callbackCurlFailNumber错误回调请求失败', 'error');
-						}else{
-							trace('['.date('Y-m-d H:i:s').'] curl请求失败，已发送回调通知', 'notice');
-						}
+                        if($result){
+                            trace('callbackCurlFailNumber错误回调请求失败', 'error');
+                        }else{
+                            trace('['.date('Y-m-d H:i:s').'] curl请求失败，已发送回调通知', 'notice');
+                        }
                     }catch (\Exception $e){
                         trace('callbackCurlFailNumber错误回调请求失败', 'error');
                         trace($e->getMessage(), 'error');
@@ -234,8 +207,8 @@ class SpiderController
                     $new_k++;
                 }
             }
-			//trace($spider_data, 'notice');
-			//trace($new_data, 'notice');
+            //trace($spider_data, 'notice');
+            //trace($new_data, 'notice');
             $new_data_count = count($new_data);
             if ($new_data_count > 0) {
                 //回调通知
@@ -243,8 +216,8 @@ class SpiderController
                     $result = asyncRequest($callback_url, 'POST', $new_data);
                     if ($result) {
                         $redis::set($key, json_encode($new_data), -1);
-						trace($params['phone_num'] . '采集成功' . $new_data_count . '条，新数据回调成功', 'notice');
-						return $new_data_count;
+                        trace($params['phone_num'] . '采集成功' . $new_data_count . '条，新数据回调成功', 'notice');
+                        return $new_data_count;
                     }
                 }catch (\Exception $e){
                     trace("存在新消息回调消息失败", 'error');
@@ -384,7 +357,9 @@ class SpiderController
     }
 
     public function updateProxy(){
-        (new RedisController())::set('proxy:error', 10);
+		$redis = new RedisController();
+        $redis::del('proxy:proxy');
+		$redis::del('proxy:lock');
         $result = $this->getProxy();
         if ($result){
             return 1;
@@ -437,7 +412,9 @@ class SpiderController
         $key_success = 'proxy:success';
         $key_agent = 'proxy:agent';
         $key_get_time = 'proxy:get_time';
+        $key_end_time = 'proxy:end_time';
         $key_account = 'proxy:account';
+        $key_blacklist = 'proxy:blacklist';
         //如果proxy不存在，需要请求
         if ($redis::exists($key_lock)) {
             printLog('proxy上锁状态', 'notice');
@@ -470,6 +447,10 @@ class SpiderController
         switch ($proxy_data['code']) {
             case 0:
                 $proxy_ip = $proxy_data['data'][0]['ip'];
+                if ($redis::sismember($key_blacklist, $proxy_ip)){
+                    trace('黑名单代理，放弃使用：' . $proxy_ip, 'notice');
+                    return self::getProxyIP();
+                }
                 $proxy_port = $proxy_data['data'][0]['port'];
                 //设置今天总共获取数量
                 $redis::inc($key_today_get);
@@ -477,20 +458,24 @@ class SpiderController
                 $redis::del($key_error);
                 $redis::del($key_success);
                 $redis::del($key_agent);
-                $redis::set($key_get_time, time()); //获取时间
+                $redis::set($key_get_time, time(), -1); //获取时间
+                $redis::set($key_end_time, strtotime($proxy_data['data'][0]['expire_time']), -1); //获取时间
                 $proxy = $proxy_ip . ':' . $proxy_port;
-                $redis::set($key_proxy, $proxy, 3600);
-                printLog('新代理获取成功：' . $proxy, 'notice');
-				if($redis::get('proxy:today_get_proxy') > 55){
-					curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
-				}
+                $redis::set($key_proxy, $proxy);
+                trace('新代理获取成功：' . $proxy, 'notice');
+                trace(json_encode($proxy_data), 'notice');
+                $proxy_count = $redis::get('proxy:today_get_proxy');
+                if($proxy_count > 55 && $proxy_count % 10 == 0){
+                    curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
+                }
                 return $proxy;
             case 115:
-			case 121:
+            case 121:
             case 116:
+            case -1:
                 //116 今日套餐已用完, 1.增加当前使用账号下标，2.领取当天免费额度 3.加入白名单
                 //115 您的该套餐已经过期了
-                if ($proxy_data['code'] == 116) {
+                if ($proxy_data['code'] == 116 || $proxy_data['code'] == -1) {
                     if ($redis::inc($key_current) + 1 > count($account)){
                         $redis::dec($key_current);
                     }
@@ -510,14 +495,14 @@ class SpiderController
                     printLog('免费套餐领取成功，重新获取代理ip', 'notice');
                     $redis::del($key_lock);
                     $this->zhimaWhiteIP($account[$redis::get($key_current)]);
-                    self::getProxyIP();
+                    return self::getProxyIP();
                 } else {
                     printLog('免费套餐领取失败', 'notice');
                     return false;
                 }
                 break;
             case 117:
-			case 401:
+            case 401:
             case 113:
                 //请添加白名单22
                 printLog('需要添加白名单', 'notice');
@@ -525,7 +510,7 @@ class SpiderController
                 if ($result) {
                     printLog('白名单添加成功，重新获取代理Ip', 'notice');
                     $redis::del($key_lock);
-                    self::getProxyIP();
+                    return self::getProxyIP();
                 } else {
                     printLog('白名单添加失败', 'notice');
                     return false;
@@ -536,11 +521,11 @@ class SpiderController
                 printLog('速度过快，等待2秒继续', 'notice');
                 sleep(2);
                 $redis::del($key_lock);
-                self::getProxyIP();
+                return self::getProxyIP();
                 break;
             default:
-				trace($proxy_data, 'error');
-				curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=代理获取未知异常，请检查');
+                trace($proxy_data, 'error');
+                curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=代理获取未知异常，请检查');
                 return false;
         }
     }
@@ -548,10 +533,13 @@ class SpiderController
     //免费领取芝麻活动
     protected function zhimaGetFree($account)
     {
-        $url = 'https://wapi.http.linkudp.com/index/users/login_do';
+        $url['zm'] = 'https://wapi.http.linkudp.com/index/users/login_do';
+        $url['ty'] = 'https://ty-http-d.hamir.net/index/login/dologin';
+        $free_url['zm'] = 'https://wapi.http.linkudp.com/index/users/get_day_free_pack';
+        $free_url['ty'] = 'https://ty-http-d.hamir.net/index/users/get_day_free_pack';
         try {
             $guzzle = new Client(['cookies' => true]);
-            $guzzle->request('POST', $url, [
+            $guzzle->request('POST', $url[$account[5]], [
                 'form_params' => [
                     'phone' => $account[3],
                     'password' => $account[4],
@@ -561,7 +549,7 @@ class SpiderController
                 'heardes' => ['User-Agent' => user_agent()],
                 'http_errors' => false,
             ]);
-            $my = $guzzle->request('POST', 'https://wapi.http.linkudp.com/index/users/get_day_free_pack', [
+            $my = $guzzle->request('POST', $free_url[$account[5]], [
                 'form_params' => [
                     'geetest_challenge' => '',
                     'geetest_validate' => '',
@@ -591,9 +579,22 @@ class SpiderController
     //设置白名单
     protected function zhimaWhiteIP($account)
     {
-        $url = 'https://wapi.http.linkudp.com/index/index/save_white?neek=' . $account[1] . '&appkey=' . $account[2] . '&white=' . publicIP();
+        //设置白名单，删除上一个号的白名单
+        $url['zm'] = 'https://wapi.http.linkudp.com/index/index/save_white?neek=' . $account[1] . '&appkey=' . $account[2] . '&white=' . publicIP();
+        $url['ty'] = 'https://ty-http-d.hamir.net/index/white/add?neek=' . $account[1] . '&appkey=' . $account[2] . '&white=' . publicIP();
+        $redis = new RedisController();
+        $current_number = $redis::get('proxy:current_number');
+        $all_account = json_decode($redis::get('proxy:account'), true);
+        if ($current_number > 0){
+            $index = $current_number - 1;
+        }else{
+            $index = count($all_account) - 1;
+        }
+        $url_del['zm'] = 'https://wapi.http.linkudp.com/index/index/del_white?neek='.$all_account[$index][1].'&appkey='.$all_account[$index][2].'&white=' . publicIP();
+        $url_del['ty'] = 'https://ty-http-d.hamir.net/index/white/del?neek='.$all_account[$index][1].'&appkey='.$all_account[$index][2].'&white=' . publicIP();
+        curl_get($url_del[$all_account[$index][5]]);
         try {
-            $result = json_decode(curl_get($url), true);
+            $result = json_decode(curl_get($url[$account[5]]), true);
             if ($result['code'] == 0 || $result['code'] == 115) {
                 return true;
             } else {
@@ -604,5 +605,5 @@ class SpiderController
             return false;
         }
     }
-	
+
 }

@@ -6,3 +6,4 @@ Route::get('spider', 'spider/Spider/spider');
 Route::get('test', 'spider/Spider/test');
 Route::get('proxy', 'spider/Spider/getProxyIP');
 Route::get('update_proxy', 'spider/Spider/updateProxy');
+Route::get('heartbeat', 'spider/Spider/heartbeat');

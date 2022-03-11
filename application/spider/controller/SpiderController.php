@@ -1,5 +1,4 @@
 <?php
-
 namespace app\spider\controller;
 
 use GuzzleHttp\Client;
@@ -9,6 +8,7 @@ use QL\QueryList;
 use think\Exception;
 use think\facade\Request;
 use think\facade\Validate;
+use think\facade\Log;
 
 class SpiderController
 {
@@ -50,11 +50,20 @@ class SpiderController
         //号码请求成功后，数据写入redis等待10秒，如果10秒内有相同的请求，直接返回redis缓存数据
         //获取到最新数据，对旧数据进行比对（旧数据的第一条for循环，看新数据是否存在）如果存在新数据，则替换掉现有的缓存，并回调请求在线服务器的入库接口。
         //加入队列
+
+        $key_phone = 'spider:phone:' . $data['phone_num'];
+        if ($redis::exists($key_phone)){
+            trace($data['phone_num'] . '，请求收到，号码等待释放中', 'notice');
+            return show($data['phone_num'] . '请求收到，号码等待释放中');
+        }
+
         $result = $redis::lpush('spider_queue', json_encode($data));
+
         if (!$result) {
             printLog('队列写入失败', 'error');
             return show('队列写入失败', '', 4000);
         } else {
+            $redis::setnx($key_phone, 1, 30);
             printLog('写入队列成功：' . $data['phone_num'], 'notice');
             //运行spider主程序
             if (!$redis::exists('spider:running')) {
@@ -211,9 +220,11 @@ class SpiderController
             //trace($new_data, 'notice');
             $new_data_count = count($new_data);
             if ($new_data_count > 0) {
+                trace($params['phone_num'] . '采集成功' . $new_data_count . '条', 'notice');
                 //回调通知
                 try {
                     $result = asyncRequest($callback_url, 'POST', $new_data);
+                    trace($result, 'notice');
                     if ($result) {
                         $redis::set($key, json_encode($new_data), -1);
                         trace($params['phone_num'] . '采集成功' . $new_data_count . '条，新数据回调成功', 'notice');
@@ -320,7 +331,7 @@ class SpiderController
         try {
             $guzzle = new Client();
             $result_html = $guzzle->request($method, $url, [
-                'timeout' => 10,
+                'timeout' => 20,
                 'heardes' => ['User-Agent' => user_agent()],
                 'http_errors' => false,
                 'proxy' => $proxy,
@@ -357,9 +368,9 @@ class SpiderController
     }
 
     public function updateProxy(){
-		$redis = new RedisController();
+        $redis = new RedisController();
         $redis::del('proxy:proxy');
-		$redis::del('proxy:lock');
+        $redis::del('proxy:lock');
         $result = $this->getProxy();
         if ($result){
             return 1;
@@ -461,7 +472,7 @@ class SpiderController
                 $redis::set($key_get_time, time(), -1); //获取时间
                 $redis::set($key_end_time, strtotime($proxy_data['data'][0]['expire_time']), -1); //获取时间
                 $proxy = $proxy_ip . ':' . $proxy_port;
-                $redis::set($key_proxy, $proxy);
+                $redis::set($key_proxy, $proxy, -1);
                 trace('新代理获取成功：' . $proxy, 'notice');
                 trace(json_encode($proxy_data), 'notice');
                 $proxy_count = $redis::get('proxy:today_get_proxy');
@@ -487,7 +498,7 @@ class SpiderController
                         return false;
                     }
                 }
-                if ($proxy_data['code'] == 115) {
+                if ($proxy_data['code'] == 115 || $proxy_data['code'] == 121) {
                     printLog('您的该套餐已经过期了，开始领取当天免费套餐', 'notice');
                 }
                 $result = $this->zhimaGetFree($account[$redis::get($key_current)]);
@@ -538,6 +549,7 @@ class SpiderController
         $free_url['zm'] = 'https://wapi.http.linkudp.com/index/users/get_day_free_pack';
         $free_url['ty'] = 'https://ty-http-d.hamir.net/index/users/get_day_free_pack';
         try {
+            trace('领取免费登陆地址:' . $url[$account[5]], 'notice');
             $guzzle = new Client(['cookies' => true]);
             $guzzle->request('POST', $url[$account[5]], [
                 'form_params' => [
@@ -549,6 +561,7 @@ class SpiderController
                 'heardes' => ['User-Agent' => user_agent()],
                 'http_errors' => false,
             ]);
+            trace('领取免费ip地址:' . $free_url[$account[5]], 'notice');
             $my = $guzzle->request('POST', $free_url[$account[5]], [
                 'form_params' => [
                     'geetest_challenge' => '',

@@ -506,12 +506,14 @@ class SpiderController
                     printLog('免费套餐领取成功，重新获取代理ip', 'notice');
                     $redis::del($key_lock);
                     $this->zhimaWhiteIP($account[$redis::get($key_current)]);
-                    return self::getProxyIP();
                 } else {
-                    printLog('免费套餐领取失败', 'notice');
-                    return false;
+                    printLog('免费套餐领取失败，获取下一个账号', 'notice');
+                    if ($redis::inc($key_current) + 1 > count($account)){
+                        $redis::dec($key_current);
+                    }
+                    $redis::del($key_lock);
                 }
-                break;
+                return self::getProxyIP();
             case 117:
             case 401:
             case 113:

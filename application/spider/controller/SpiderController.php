@@ -178,6 +178,7 @@ class SpiderController
             printLog('采集数据不全', 'notice');
             return false;
         } else {
+            $redis::del('proxy:continuous_proxy'); //连续失败代理统计，如果成功，刚删除
             $redis::inc('spider:success:' . $params['site']);
         }
         $key = $this->redis_key . $params['phone_num'];
@@ -384,7 +385,10 @@ class SpiderController
         $key_proxy = 'proxy:proxy';
         $key_error = 'proxy:error';
         $redis = new RedisController();
-
+        if ($redis::get('proxy:continuous_proxy') > 9){
+            curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=连续获取代理次数过多，请检查源是否能访问');
+            return false;
+        }
         if (!$redis::exists($key_proxy)) {
             printLog('代理不存在，开始获取新的代理', 'notice');
             $proxy = $this->getProxyIP();
@@ -416,7 +420,7 @@ class SpiderController
         printLog('开始获取代理ip', 'notice');
         $redis = new RedisController();
         $key_current = 'proxy:current_number';
-        $key_today_get = 'proxy:today_get_proxy';
+        $key_today_get = 'spider:analysis:'.date('Ynd').':today_get_proxy';
         $key_proxy = 'proxy:proxy';
         $key_lock = 'proxy:lock';
         $key_error = 'proxy:error';
@@ -426,6 +430,7 @@ class SpiderController
         $key_end_time = 'proxy:end_time';
         $key_account = 'proxy:account';
         $key_blacklist = 'proxy:blacklist';
+        $key_continuous_proxy = 'proxy:continuous_proxy';
         //如果proxy不存在，需要请求
         if ($redis::exists($key_lock)) {
             printLog('proxy上锁状态', 'notice');
@@ -440,13 +445,14 @@ class SpiderController
             $init_value = 0;
             $expire = getTodayEndTimestamp();
             $redis::set($key_current, $init_value, $expire);
-            $redis::set($key_today_get, 0, $expire);
+            $redis::set($key_today_get, 0, -1);
             $proxy_current_number = $init_value;
         } else {
             $proxy_current_number = $redis::get($key_current);
         }
         printLog('第【' . $proxy_current_number . '】个账号', 'notice');
         try {
+			trace($account[$proxy_current_number][0], 'notice');
             $proxy_data = json_decode(file_get_contents($account[$proxy_current_number][0]), true);
             printLog(json_encode($proxy_data), 'notice');
         }catch (\Exception $e){
@@ -465,6 +471,7 @@ class SpiderController
                 $proxy_port = $proxy_data['data'][0]['port'];
                 //设置今天总共获取数量
                 $redis::inc($key_today_get);
+                $redis::inc($key_continuous_proxy);
                 //清除当前错误数量
                 $redis::del($key_error);
                 $redis::del($key_success);
@@ -475,9 +482,10 @@ class SpiderController
                 $redis::set($key_proxy, $proxy, -1);
                 trace('新代理获取成功：' . $proxy, 'notice');
                 trace(json_encode($proxy_data), 'notice');
-                $proxy_count = $redis::get('proxy:today_get_proxy');
+                $proxy_count = $redis::get($key_today_get);
+				//curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
                 if($proxy_count > 55 && $proxy_count % 10 == 0){
-                    curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
+                    //curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=' . '代理更换成功：' . $redis::get($key_current) . '/' . $redis::get($key_today_get));
                 }
                 return $proxy;
             case 115:
@@ -488,7 +496,8 @@ class SpiderController
                 //115 您的该套餐已经过期了
                 if ($proxy_data['code'] == 116 || $proxy_data['code'] == -1) {
                     if ($redis::inc($key_current) + 1 > count($account)){
-                        $redis::dec($key_current);
+                        curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=代理已用完');
+                        //$redis::dec($key_current);
                     }
                     $redis::del($key_lock);
                     printLog('套餐已经用完，获取下一个账号,开始领取免费套餐', 'notice');
@@ -509,7 +518,8 @@ class SpiderController
                 } else {
                     printLog('免费套餐领取失败，获取下一个账号', 'notice');
                     if ($redis::inc($key_current) + 1 > count($account)){
-                        $redis::dec($key_current);
+                        curl_get('http://notice.bilulanlv.com/?key=qywsxxl&title=代理已用完');
+                        //$redis::dec($key_current);
                     }
                     $redis::del($key_lock);
                 }
